@@ -23,7 +23,7 @@
   <ItemGroup>
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="HotChocolate.AspNetCore" Version="15.0.3" />
+    <PackageReference Include="HotChocolate.AspNetCore" Version="15.1.5" />
     <PackageReference Include="kentico.xperience.admin" Version="30.5.0" Condition="'$(SeparatedAdmin)' == 'false'" />
     <PackageReference Include="kentico.xperience.azurestorage" Version="30.5.0" />
     <PackageReference Include="kentico.xperience.imageprocessing" Version="30.5.0" />

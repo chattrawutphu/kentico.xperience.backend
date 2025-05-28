@@ -17,7 +17,7 @@ using Kentico.Membership;
 using Kentico.OnlineMarketing.Web.Mvc;
 using Kentico.PageBuilder.Web.Mvc;
 using Kentico.Web.Mvc;
-
+using Kentico.Xperience.Backend.GraphQL;
 
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -28,6 +28,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Configuration;
 
 using Samples.DancingGoat;
 
@@ -58,6 +59,22 @@ builder.Services.AddKentico(features =>
     features.UseCommerce();
 #pragma warning restore KXE0002 // Commerce feature is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
 });
+
+// Configure CORS
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowNextJS", policy =>
+    {
+        var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>();
+        policy.WithOrigins(allowedOrigins ?? new[] { "http://localhost:3000" })
+              .AllowAnyHeader()
+              .AllowAnyMethod()
+              .AllowCredentials();
+    });
+});
+
+// Register custom GraphQL services
+builder.Services.AddCustomGraphQLServices();
 
 builder.Services.Configure<RouteOptions>(options => options.LowercaseUrls = true);
 
@@ -91,10 +108,21 @@ app.UseCookiePolicy();
 
 app.UseAuthentication();
 
+// Use CORS before GraphQL middleware
+app.UseCors("AllowNextJS");
+
+// Use API key authentication
+app.UseApiKeyAuthentication();
 
 app.UseKentico();
 
+// Add GraphQL middleware
+app.UseRouting();
 app.UseAuthorization();
+app.UseEndpoints(endpoints =>
+{
+    endpoints.MapGraphQL();
+});
 
 app.UseStatusCodePagesWithReExecute("/error/{0}");
 
