@@ -1,0 +1,8 @@
+{
+  "version": "1.0.0",
+  "name": "embedded-components",
+  "updateNote": "This is just a dummy package.json file used for vulnerability scanning of embedded JS components. When updating package here, do not forget to update the library file itself.",
+  "dependencies": {
+    "inputmask": "5.0.9"
+  }
+}
