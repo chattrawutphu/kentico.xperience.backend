@@ -66,7 +66,7 @@ namespace Kentico.Xperience.Backend.GraphQL
                 using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, cancellationToken);
                 
                 // Use default language if not specified
-                language = language ?? "en-US";
+                language = language ?? "en";
                 
                 _logger?.LogInformation($"Fetching content with parameters: Path={path}, Language={language}, ContentType={contentType}, TypeContentPath={typeContentPath}");
                 
@@ -157,6 +157,31 @@ namespace Kentico.Xperience.Backend.GraphQL
                 
                 // Execute the query with caching
                 var cacheSettings = new CacheSettings(5, _websiteChannelContext.WebsiteChannelName, "DynamicContent", path, language, contentType);
+                
+                // Special handling for ArticlePage content type
+                if (contentType == "DancingGoat.ArticlePage")
+                {
+                    var articleRepository = _serviceProvider.GetService<DancingGoat.Models.ArticlePageRepository>();
+                    if (articleRepository != null)
+                    {
+                        var articles = await articleRepository.GetArticlePages(path, language, _websiteChannelContext.IsPreview, selectTopNPages);
+                        
+                        _logger?.LogInformation($"Found {articles.Count()} articles using ArticlePageRepository");
+                        
+                        // Convert articles to dictionaries
+                        return articles.Select(article => new Dictionary<string, object>
+                        {
+                            ["WebPageItemID"] = article.SystemFields.WebPageItemID,
+                            ["WebPageItemGUID"] = article.SystemFields.WebPageItemGUID.ToString(),
+                            ["WebPageItemName"] = article.SystemFields.WebPageItemName,
+                            ["WebPageItemTreePath"] = article.SystemFields.WebPageItemTreePath,
+                            ["ArticleTitle"] = article.ArticleTitle,
+                            ["ArticlePageSummary"] = article.ArticlePageSummary,
+                            ["ArticlePageText"] = article.ArticlePageText,
+                            ["ArticlePagePublishDate"] = article.ArticlePagePublishDate
+                        }).ToList();
+                    }
+                }
                 
                 var result = await GetCachedQueryResultAsync(
                     queryBuilder, 
