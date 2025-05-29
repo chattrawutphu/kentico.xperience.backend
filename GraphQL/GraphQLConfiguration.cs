@@ -2,6 +2,11 @@ using System.Collections.Generic;
 using HotChocolate;
 using HotChocolate.Types;
 using Microsoft.Extensions.DependencyInjection;
+using DancingGoat.Models;
+using CMS.Websites.Routing;
+using CMS.ContentEngine;
+using CMS.Helpers;
+using CMS.Websites;
 
 namespace Kentico.Xperience.Backend.GraphQL
 {
@@ -17,7 +22,10 @@ namespace Kentico.Xperience.Backend.GraphQL
         /// <returns>The service collection with GraphQL services registered.</returns>
         public static IServiceCollection AddCustomGraphQLServices(this IServiceCollection services)
         {
-            // Register the resolvers
+            // Register content repositories
+            services.AddSingleton<ArticlePageRepository>();
+            
+            // Register the GraphQL resolvers
             services.AddSingleton<DynamicContentResolver>();
             services.AddSingleton<ArticlesResolver>();
             services.AddSingleton<PageContentResolver>();
