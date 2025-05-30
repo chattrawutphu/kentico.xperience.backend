@@ -12,6 +12,7 @@ using CMS.Helpers;
 using CMS.Websites;
 using Kentico.Content.Web.Mvc.Routing;
 using CMS.Core;
+using System.Threading;
 
 namespace Kentico.Xperience.Backend.GraphQL
 {
@@ -87,6 +88,10 @@ namespace Kentico.Xperience.Backend.GraphQL
         /// <param name="orderBy">Field to order by.</param>
         /// <param name="selectTopNPages">Maximum number of items to return.</param>
         /// <param name="whereCondition">Optional filtering condition.</param>
+        /// <param name="skip">Number of items to skip (for pagination).</param>
+        /// <param name="take">Number of items to take (for pagination).</param>
+        /// <param name="cacheKey">Custom cache key for more control over caching.</param>
+        /// <param name="bypassCache">Flag to bypass cache and force a fresh database query.</param>
         /// <returns>The result of the dynamic content query.</returns>
         [GraphQLName("getDynamicContent")]
         public async Task<List<DynamicContentItem>> GetDynamicContent(
@@ -98,7 +103,11 @@ namespace Kentico.Xperience.Backend.GraphQL
             int? maximumNestingLevel = null,
             string orderBy = null,
             int? selectTopNPages = null,
-            string whereCondition = null)
+            string whereCondition = null,
+            int? skip = null,
+            int? take = null,
+            string cacheKey = null,
+            bool? bypassCache = null)
         {
             // Call the async method from DynamicContentResolver
             var result = await resolver.GetDynamicContentAsync(
@@ -109,7 +118,11 @@ namespace Kentico.Xperience.Backend.GraphQL
                 maximumNestingLevel: maximumNestingLevel ?? -1,
                 orderBy: orderBy,
                 selectTopNPages: selectTopNPages ?? 0,
-                whereCondition: whereCondition
+                whereCondition: whereCondition,
+                skip: skip ?? 0,
+                take: take ?? 0,
+                cacheKey: cacheKey,
+                bypassCache: bypassCache ?? false
             );
 
             // Convert to list of DynamicContentItem
@@ -223,6 +236,75 @@ namespace Kentico.Xperience.Backend.GraphQL
             }
             
             return default(T); // returns null for reference types and nullable value types
+        }
+    }
+
+    // Define a type for DancingGoat.ArticlePage
+    public class DancingGoatArticlePageType : ObjectType<DancingGoat.Models.ArticlePage>
+    {
+        protected override void Configure(IObjectTypeDescriptor<DancingGoat.Models.ArticlePage> descriptor)
+        {
+            base.Configure(descriptor);
+
+            descriptor.Name("DancingGoatArticlePage");
+            
+            // Define fields mapping
+            descriptor.Field(f => f.ArticleTitle).Type<StringType>();
+            descriptor.Field(f => f.ArticlePageSummary).Type<StringType>();
+            descriptor.Field(f => f.ArticlePageText).Type<StringType>();
+            descriptor.Field(f => f.ArticlePagePublishDate).Type<DateTimeType>();
+        }
+    }
+
+    // Define the Query type for GraphQL schema
+    public class DynamicContentQuery
+    {
+        // Define getDynamicContent resolver
+        [GraphQLDescription("Gets dynamic content items with flexible filtering")]
+        public Task<IEnumerable<Dictionary<string, object>>> GetDynamicContent(
+            [Service] DynamicContentResolver resolver,
+            string path = "/",
+            string language = null,
+            string typeContentPath = "All child pages",
+            string contentType = null,
+            int maximumNestingLevel = -1,
+            string orderBy = null,
+            int selectTopNPages = 0,
+            string whereCondition = null,
+            int skip = 0,
+            int take = 0,
+            string cacheKey = null,
+            bool bypassCache = false,
+            CancellationToken cancellationToken = default)
+        {
+            return resolver.GetDynamicContentAsync(
+                path, 
+                language, 
+                typeContentPath, 
+                contentType, 
+                maximumNestingLevel, 
+                orderBy, 
+                selectTopNPages, 
+                whereCondition,
+                skip,
+                take,
+                cacheKey,
+                bypassCache,
+                cancellationToken);
+        }
+        
+        // Define getDynamicPages resolver (backward compatibility)
+        [GraphQLDescription("Gets dynamic pages (backward compatibility)")]
+        public object GetDynamicPages(
+            [Service] DynamicContentResolver resolver,
+            string contentType,
+            string path = null,
+            int? limit = null,
+            int? offset = null,
+            string orderBy = "DocumentPublishFrom",
+            string orderDirection = "desc")
+        {
+            return resolver.GetDynamicPages(contentType, path, limit, offset, orderBy, orderDirection);
         }
     }
 } 

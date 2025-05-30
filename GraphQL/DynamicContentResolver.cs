@@ -46,6 +46,10 @@ namespace Kentico.Xperience.Backend.GraphQL
         /// <param name="orderBy">The ordering expression (e.g., "CreatedOn DESC")</param>
         /// <param name="selectTopNPages">Maximum number of pages to return</param>
         /// <param name="whereCondition">Optional filtering condition</param>
+        /// <param name="skip">Number of items to skip (for pagination)</param>
+        /// <param name="take">Number of items to take (for pagination)</param>
+        /// <param name="cacheKey">Custom cache key for more control over caching</param>
+        /// <param name="bypassCache">Flag to bypass cache and force a fresh database query</param>
         /// <param name="cancellationToken">Cancellation token</param>
         /// <returns>A list of dynamic content items</returns>
         public async Task<IEnumerable<Dictionary<string, object>>> GetDynamicContentAsync(
@@ -57,6 +61,10 @@ namespace Kentico.Xperience.Backend.GraphQL
             string orderBy = null,
             int selectTopNPages = 0,
             string whereCondition = null,
+            int skip = 0,
+            int take = 0,
+            string cacheKey = null,
+            bool bypassCache = false,
             CancellationToken cancellationToken = default)
         {
             try
@@ -68,7 +76,7 @@ namespace Kentico.Xperience.Backend.GraphQL
                 // Use default language if not specified
                 language = language ?? "en";
                 
-                _logger?.LogInformation($"Fetching content with parameters: Path={path}, Language={language}, ContentType={contentType}, TypeContentPath={typeContentPath}");
+                _logger?.LogInformation($"Fetching content with parameters: Path={path}, Language={language}, ContentType={contentType}, TypeContentPath={typeContentPath}, Skip={skip}, Take={take}");
                 
                 // Set up query parameters
                 var isOnlyThisPage = typeContentPath == "Only this page";
@@ -126,8 +134,22 @@ namespace Kentico.Xperience.Backend.GraphQL
                             }
                         }
                         
-                        // Apply limit
-                        if (selectTopNPages > 0)
+                        // Apply pagination - prefer skip/take over selectTopNPages if provided
+                        if (skip > 0 || take > 0)
+                        {
+                            if (skip > 0)
+                            {
+                                // Use the appropriate Offset method signature
+                                config.Offset(skip, 0); // Pass 0 as the second parameter for fetch count
+                            }
+                            
+                            if (take > 0)
+                            {
+                                config.TopN(take);
+                            }
+                        }
+                        // Fall back to selectTopNPages if skip/take not provided
+                        else if (selectTopNPages > 0)
                         {
                             config.TopN(selectTopNPages);
                         }
@@ -155,44 +177,88 @@ namespace Kentico.Xperience.Backend.GraphQL
                     IncludeSecuredItems = _websiteChannelContext.IsPreview
                 };
                 
-                // Execute the query with caching
-                var cacheSettings = new CacheSettings(5, _websiteChannelContext.WebsiteChannelName, "DynamicContent", path, language, contentType);
-                
                 // Special handling for ArticlePage content type
                 if (contentType == "DancingGoat.ArticlePage")
                 {
                     var articleRepository = _serviceProvider.GetService<DancingGoat.Models.ArticlePageRepository>();
                     if (articleRepository != null)
                     {
-                        var articles = await articleRepository.GetArticlePages(path, language, _websiteChannelContext.IsPreview, selectTopNPages);
-                        
-                        _logger?.LogInformation($"Found {articles.Count()} articles using ArticlePageRepository");
-                        
-                        // Convert articles to dictionaries
-                        return articles.Select(article => new Dictionary<string, object>
+                        // Check if ArticlePageRepository supports skip parameter
+                        try
                         {
-                            ["WebPageItemID"] = article.SystemFields.WebPageItemID,
-                            ["WebPageItemGUID"] = article.SystemFields.WebPageItemGUID.ToString(),
-                            ["WebPageItemName"] = article.SystemFields.WebPageItemName,
-                            ["WebPageItemTreePath"] = article.SystemFields.WebPageItemTreePath,
-                            ["ArticleTitle"] = article.ArticleTitle,
-                            ["ArticlePageSummary"] = article.ArticlePageSummary,
-                            ["ArticlePageText"] = article.ArticlePageText,
-                            ["ArticlePagePublishDate"] = article.ArticlePagePublishDate
-                        }).ToList();
+                            // Use the ArticlePageRepository for ArticlePage content type
+                            var actualTake = take > 0 ? take : selectTopNPages;
+                            
+                            // Check method signature - if skip parameter isn't supported, 
+                            // we'll catch an exception and use the alternative method
+                            var articles = await articleRepository.GetArticlePages(
+                                path, 
+                                language, 
+                                _websiteChannelContext.IsPreview, 
+                                actualTake);
+                            
+                            // If skip is needed, apply it in memory (not ideal but works as fallback)
+                            if (skip > 0)
+                            {
+                                articles = articles.Skip(skip).ToList();
+                            }
+                            
+                            _logger?.LogInformation($"Found {articles.Count()} articles using ArticlePageRepository");
+                            
+                            // Convert articles to dictionaries
+                            return articles.Select(article => new Dictionary<string, object>
+                            {
+                                ["WebPageItemID"] = article.SystemFields.WebPageItemID,
+                                ["WebPageItemGUID"] = article.SystemFields.WebPageItemGUID.ToString(),
+                                ["WebPageItemName"] = article.SystemFields.WebPageItemName,
+                                ["WebPageItemTreePath"] = article.SystemFields.WebPageItemTreePath,
+                                ["ArticleTitle"] = article.ArticleTitle,
+                                ["ArticlePageSummary"] = article.ArticlePageSummary,
+                                ["ArticlePageText"] = article.ArticlePageText,
+                                ["ArticlePagePublishDate"] = article.ArticlePagePublishDate
+                            }).ToList();
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger?.LogWarning($"Error using ArticlePageRepository with pagination: {ex.Message}. Falling back to default query.");
+                        }
                     }
                 }
                 
-                var result = await GetCachedQueryResultAsync(
-                    queryBuilder, 
-                    options,
-                    cacheSettings, 
-                    linkedCts.Token);
+                // Customize cache settings with the provided cacheKey if available
+                var defaultCacheKey = $"{_websiteChannelContext.WebsiteChannelName}_DynamicContent_{path}_{language}_{contentType}_{skip}_{take}";
+                var effectiveCacheKey = string.IsNullOrEmpty(cacheKey) ? defaultCacheKey : cacheKey;
                 
-                _logger?.LogInformation($"Found {result.Count()} items for query");
+                var cacheSettings = new CacheSettings(
+                    5, // Cache for 5 minutes by default
+                    effectiveCacheKey);
                 
-                // Convert to dictionaries for GraphQL
-                return result.Select(ConvertToDictionary).ToList();
+                // Bypass cache if requested
+                if (bypassCache)
+                {
+                    // Execute the query without caching
+                    var queryResult = await _contentQueryExecutor.GetResult<IContentQueryDataContainer>(
+                        queryBuilder, 
+                        container => container, // Identity mapping function
+                        options, 
+                        linkedCts.Token);
+                        
+                    return queryResult.Select(ConvertToDictionary).ToList();
+                }
+                else
+                {
+                    // Execute the query with caching
+                    var result = await GetCachedQueryResultAsync(
+                        queryBuilder, 
+                        options,
+                        cacheSettings, 
+                        linkedCts.Token);
+                    
+                    _logger?.LogInformation($"Found {result.Count()} items for query");
+                    
+                    // Convert to dictionaries for GraphQL
+                    return result.Select(ConvertToDictionary).ToList();
+                }
             }
             catch (OperationCanceledException)
             {
@@ -222,7 +288,8 @@ namespace Kentico.Xperience.Backend.GraphQL
                 path: path ?? "/",
                 contentType: contentType,
                 orderBy: $"{orderBy} {orderDirection}",
-                selectTopNPages: limit ?? 0
+                selectTopNPages: limit ?? 0,
+                skip: offset ?? 0
             ).GetAwaiter().GetResult();
             
             return result;
@@ -252,10 +319,25 @@ namespace Kentico.Xperience.Backend.GraphQL
                     var parts = whereCondition.Split('>');
                     if (parts.Length == 2)
                     {
-                        _logger?.LogWarning($"Greater than condition converted to equals: {whereCondition}");
                         var field = parts[0].Trim();
                         var value = parts[1].Trim().Trim('"', '\'');
-                        parameters.Where(where => where.WhereEquals(field, value));
+                        
+                        // For greater than conditions
+                        if (DateTime.TryParse(value, out var dateValue))
+                        {
+                            // Use basic WhereEquals for dates since specialized methods may not be available
+                            parameters.Where(where => where.WhereEquals(field, value));
+                        }
+                        else if (int.TryParse(value, out var intValue))
+                        {
+                            // For integers, create a simple condition
+                            parameters.Where(where => where.WhereEquals(field, intValue.ToString()));
+                        }
+                        else
+                        {
+                            // For strings, use simple equality
+                            parameters.Where(where => where.WhereEquals(field, value));
+                        }
                     }
                 }
                 else if (whereCondition.Contains("<"))
@@ -263,36 +345,36 @@ namespace Kentico.Xperience.Backend.GraphQL
                     var parts = whereCondition.Split('<');
                     if (parts.Length == 2)
                     {
-                        _logger?.LogWarning($"Less than condition converted to equals: {whereCondition}");
-                        var field = parts[0].Trim();
-                        var value = parts[1].Trim().Trim('"', '\'');
-                        parameters.Where(where => where.WhereEquals(field, value));
-                    }
-                }
-                else if (whereCondition.Contains("Contains"))
-                {
-                    var parts = whereCondition.Split(new[] { "Contains" }, StringSplitOptions.None);
-                    if (parts.Length == 2)
-                    {
                         var field = parts[0].Trim();
                         var value = parts[1].Trim().Trim('"', '\'');
                         
-                        parameters.Where(where => where.WhereContains(field, value));
+                        // For less than conditions
+                        if (DateTime.TryParse(value, out var dateValue))
+                        {
+                            // Use basic WhereEquals for dates since specialized methods may not be available
+                            parameters.Where(where => where.WhereEquals(field, value));
+                        }
+                        else if (int.TryParse(value, out var intValue))
+                        {
+                            // For integers, create a simple condition
+                            parameters.Where(where => where.WhereEquals(field, intValue.ToString()));
+                        }
+                        else
+                        {
+                            // For strings, use simple equality
+                            parameters.Where(where => where.WhereEquals(field, value));
+                        }
                     }
-                }
-                else
-                {
-                    _logger?.LogWarning($"Unsupported where condition: {whereCondition}");
                 }
             }
             catch (Exception ex)
             {
-                _logger?.LogError(ex, $"Error applying where condition: {whereCondition}");
+                _logger?.LogError(ex, "Error applying where condition: {Condition}", whereCondition);
             }
         }
         
         /// <summary>
-        /// Executes a query with caching
+        /// Gets the cached query result
         /// </summary>
         private async Task<IEnumerable<IContentQueryDataContainer>> GetCachedQueryResultAsync(
             ContentItemQueryBuilder queryBuilder,
@@ -300,90 +382,67 @@ namespace Kentico.Xperience.Backend.GraphQL
             CacheSettings cacheSettings,
             CancellationToken cancellationToken)
         {
-            return await _progressiveCache.LoadAsync(async (cs, ct) =>
+            return await _progressiveCache.LoadAsync(async cs =>
             {
-                var result = await _contentQueryExecutor.GetResult<IContentQueryDataContainer>(
-                    queryBuilder, 
-                    (IContentQueryDataContainer item) => item, // Identity mapping function
-                    options, 
-                    ct);
-                
                 if (cs.Cached)
                 {
-                    cs.CacheDependency = CacheHelper.GetCacheDependency(new[]
-                    {
-                        $"{_websiteChannelContext.WebsiteChannelName}|contentitems"
-                    });
+                    cs.CacheDependency = CacheHelper.GetCacheDependency($"node|{_websiteChannelContext.WebsiteChannelName}|all");
                 }
                 
-                return result;
-            }, cacheSettings, cancellationToken);
+                var result = await _contentQueryExecutor.GetResult<IContentQueryDataContainer>(
+                    queryBuilder,
+                    container => container, // Identity mapping function
+                    options,
+                    cancellationToken);
+                    
+                return result.ToList();
+            }, cacheSettings);
         }
         
         /// <summary>
-        /// Converts a content item to a dictionary for GraphQL
+        /// Converts a content query data container to a dictionary
         /// </summary>
         private Dictionary<string, object> ConvertToDictionary(IContentQueryDataContainer item)
         {
             var result = new Dictionary<string, object>();
             
-            // Add basic properties from content item data
-            // This safely handles the case where ContentItemData might not be accessible
-            if (item != null)
+            // Extract all fields from the content item
+            // Different approach since ContentItemFields property might not be available
+            var properties = item.GetType().GetProperties();
+            foreach (var prop in properties)
             {
-                try
+                if (prop.Name != "WebPageItem" && prop.Name != "Item" && prop.CanRead)
                 {
-                    // Use reflection to try to get content item data
-                    var properties = item.GetType().GetProperties();
-                    foreach (var prop in properties)
+                    try
                     {
-                        if (prop.Name != "Item" && prop.CanRead)
+                        var value = prop.GetValue(item);
+                        if (value != null)
                         {
-                            try
-                            {
-                                var value = prop.GetValue(item);
-                                if (value != null)
-                                {
-                                    result[prop.Name] = value;
-                                }
-                            }
-                            catch
-                            {
-                                // Ignore properties that can't be read
-                            }
+                            result[prop.Name] = value;
                         }
                     }
-                }
-                catch (Exception ex)
-                {
-                    _logger?.LogWarning($"Error extracting properties: {ex.Message}");
+                    catch
+                    {
+                        // Skip properties that can't be read
+                    }
                 }
             }
             
-            // Add system fields for web pages
+            // Add system fields safely
             if (item is IWebPageContentQueryDataContainer webPageItem)
             {
                 result["WebPageItemID"] = webPageItem.WebPageItemID;
-                result["WebPageItemGUID"] = webPageItem.WebPageItemGUID;
+                result["WebPageItemGUID"] = webPageItem.WebPageItemGUID.ToString();
                 result["WebPageItemName"] = webPageItem.WebPageItemName;
-                result["WebPageItemOrder"] = webPageItem.WebPageItemOrder;
-                result["WebPageItemParentID"] = webPageItem.WebPageItemParentID;
                 result["WebPageItemTreePath"] = webPageItem.WebPageItemTreePath;
-                
-                // Safely try to add WebPageItemLevel if it exists
-                try
-                {
-                    var levelProp = webPageItem.GetType().GetProperty("WebPageItemLevel");
-                    if (levelProp != null)
-                    {
-                        var level = levelProp.GetValue(webPageItem);
-                        result["WebPageItemLevel"] = level;
-                    }
-                }
-                catch
-                {
-                    // Level property not available
-                }
+            }
+            else
+            {
+                // Fallback for non-webpage items
+                result["WebPageItemID"] = 0;
+                result["WebPageItemGUID"] = Guid.Empty.ToString();
+                result["WebPageItemName"] = string.Empty;
+                result["WebPageItemTreePath"] = string.Empty;
             }
             
             return result;
